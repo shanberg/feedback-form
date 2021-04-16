@@ -1,15 +1,18 @@
 {
   "name": "@shanberg/feedback-form",
-  "version": "1.0.0",
-  "private": true,
+  "version": "1.0.1",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/shanberg/feedback-form.git"
   },
+  "svelte": "src/index.js",
+  "module": "dist/index.mjs",
+  "main": "dist/index.js",
   "scripts": {
+    "start": "sirv public --no-clear",
     "build": "rollup -c",
     "dev": "rollup -c -w",
-    "start": "sirv public --no-clear"
+    "prepublishOnly": "npm run build"
   },
   "devDependencies": {
     "@rollup/plugin-commonjs": "^17.0.0",
@@ -23,5 +26,16 @@
   },
   "dependencies": {
     "sirv-cli": "^1.0.0"
-  }
+  },
+  "files": [
+    "src",
+    "dist"
+  ],
+  "description": "*Looking for a shareable component template? Go here --> [sveltejs/component-template](https://github.com/sveltejs/component-template)*",
+  "bugs": {
+    "url": "https://github.com/shanberg/feedback-form/issues"
+  },
+  "homepage": "https://github.com/shanberg/feedback-form#readme",
+  "author": "shanberg",
+  "license": "ISC"
 }

@@ -4,7 +4,6 @@ var app = (function () {
     'use strict';
 
     function noop() { }
-    const identity = x => x;
     function add_location(element, file, line, column, char) {
         element.__svelte_meta = {
             loc: { file, line, column, char }
@@ -27,41 +26,6 @@ var app = (function () {
     }
     function is_empty(obj) {
         return Object.keys(obj).length === 0;
-    }
-
-    const is_client = typeof window !== 'undefined';
-    let now = is_client
-        ? () => window.performance.now()
-        : () => Date.now();
-    let raf = is_client ? cb => requestAnimationFrame(cb) : noop;
-
-    const tasks = new Set();
-    function run_tasks(now) {
-        tasks.forEach(task => {
-            if (!task.c(now)) {
-                tasks.delete(task);
-                task.f();
-            }
-        });
-        if (tasks.size !== 0)
-            raf(run_tasks);
-    }
-    /**
-     * Creates a new task that runs on each raf frame
-     * until it returns a falsy value or is aborted
-     */
-    function loop(callback) {
-        let task;
-        if (tasks.size === 0)
-            raf(run_tasks);
-        return {
-            promise: new Promise(fulfill => {
-                tasks.add(task = { c: callback, f: fulfill });
-            }),
-            abort() {
-                tasks.delete(task);
-            }
-        };
     }
 
     function append(target, node) {
@@ -121,67 +85,6 @@ var app = (function () {
             result[attribute.name] = attribute.value;
         }
         return result;
-    }
-
-    const active_docs = new Set();
-    let active = 0;
-    // https://github.com/darkskyapp/string-hash/blob/master/index.js
-    function hash(str) {
-        let hash = 5381;
-        let i = str.length;
-        while (i--)
-            hash = ((hash << 5) - hash) ^ str.charCodeAt(i);
-        return hash >>> 0;
-    }
-    function create_rule(node, a, b, duration, delay, ease, fn, uid = 0) {
-        const step = 16.666 / duration;
-        let keyframes = '{\n';
-        for (let p = 0; p <= 1; p += step) {
-            const t = a + (b - a) * ease(p);
-            keyframes += p * 100 + `%{${fn(t, 1 - t)}}\n`;
-        }
-        const rule = keyframes + `100% {${fn(b, 1 - b)}}\n}`;
-        const name = `__svelte_${hash(rule)}_${uid}`;
-        const doc = node.ownerDocument;
-        active_docs.add(doc);
-        const stylesheet = doc.__svelte_stylesheet || (doc.__svelte_stylesheet = doc.head.appendChild(element('style')).sheet);
-        const current_rules = doc.__svelte_rules || (doc.__svelte_rules = {});
-        if (!current_rules[name]) {
-            current_rules[name] = true;
-            stylesheet.insertRule(`@keyframes ${name} ${rule}`, stylesheet.cssRules.length);
-        }
-        const animation = node.style.animation || '';
-        node.style.animation = `${animation ? `${animation}, ` : ''}${name} ${duration}ms linear ${delay}ms 1 both`;
-        active += 1;
-        return name;
-    }
-    function delete_rule(node, name) {
-        const previous = (node.style.animation || '').split(', ');
-        const next = previous.filter(name
-            ? anim => anim.indexOf(name) < 0 // remove specific animation
-            : anim => anim.indexOf('__svelte') === -1 // remove all Svelte animations
-        );
-        const deleted = previous.length - next.length;
-        if (deleted) {
-            node.style.animation = next.join(', ');
-            active -= deleted;
-            if (!active)
-                clear_rules();
-        }
-    }
-    function clear_rules() {
-        raf(() => {
-            if (active)
-                return;
-            active_docs.forEach(doc => {
-                const stylesheet = doc.__svelte_stylesheet;
-                let i = stylesheet.cssRules.length;
-                while (i--)
-                    stylesheet.deleteRule(i);
-                doc.__svelte_rules = {};
-            });
-            active_docs.clear();
-        });
     }
 
     let current_component;
@@ -252,162 +155,12 @@ var app = (function () {
             $$.after_update.forEach(add_render_callback);
         }
     }
-
-    let promise;
-    function wait() {
-        if (!promise) {
-            promise = Promise.resolve();
-            promise.then(() => {
-                promise = null;
-            });
-        }
-        return promise;
-    }
-    function dispatch(node, direction, kind) {
-        node.dispatchEvent(custom_event(`${direction ? 'intro' : 'outro'}${kind}`));
-    }
     const outroing = new Set();
-    let outros;
-    function group_outros() {
-        outros = {
-            r: 0,
-            c: [],
-            p: outros // parent group
-        };
-    }
-    function check_outros() {
-        if (!outros.r) {
-            run_all(outros.c);
-        }
-        outros = outros.p;
-    }
     function transition_in(block, local) {
         if (block && block.i) {
             outroing.delete(block);
             block.i(local);
         }
-    }
-    function transition_out(block, local, detach, callback) {
-        if (block && block.o) {
-            if (outroing.has(block))
-                return;
-            outroing.add(block);
-            outros.c.push(() => {
-                outroing.delete(block);
-                if (callback) {
-                    if (detach)
-                        block.d(1);
-                    callback();
-                }
-            });
-            block.o(local);
-        }
-    }
-    const null_transition = { duration: 0 };
-    function create_bidirectional_transition(node, fn, params, intro) {
-        let config = fn(node, params);
-        let t = intro ? 0 : 1;
-        let running_program = null;
-        let pending_program = null;
-        let animation_name = null;
-        function clear_animation() {
-            if (animation_name)
-                delete_rule(node, animation_name);
-        }
-        function init(program, duration) {
-            const d = program.b - t;
-            duration *= Math.abs(d);
-            return {
-                a: t,
-                b: program.b,
-                d,
-                duration,
-                start: program.start,
-                end: program.start + duration,
-                group: program.group
-            };
-        }
-        function go(b) {
-            const { delay = 0, duration = 300, easing = identity, tick = noop, css } = config || null_transition;
-            const program = {
-                start: now() + delay,
-                b
-            };
-            if (!b) {
-                // @ts-ignore todo: improve typings
-                program.group = outros;
-                outros.r += 1;
-            }
-            if (running_program || pending_program) {
-                pending_program = program;
-            }
-            else {
-                // if this is an intro, and there's a delay, we need to do
-                // an initial tick and/or apply CSS animation immediately
-                if (css) {
-                    clear_animation();
-                    animation_name = create_rule(node, t, b, duration, delay, easing, css);
-                }
-                if (b)
-                    tick(0, 1);
-                running_program = init(program, duration);
-                add_render_callback(() => dispatch(node, b, 'start'));
-                loop(now => {
-                    if (pending_program && now > pending_program.start) {
-                        running_program = init(pending_program, duration);
-                        pending_program = null;
-                        dispatch(node, running_program.b, 'start');
-                        if (css) {
-                            clear_animation();
-                            animation_name = create_rule(node, t, running_program.b, running_program.duration, 0, easing, config.css);
-                        }
-                    }
-                    if (running_program) {
-                        if (now >= running_program.end) {
-                            tick(t = running_program.b, 1 - t);
-                            dispatch(node, running_program.b, 'end');
-                            if (!pending_program) {
-                                // we're done
-                                if (running_program.b) {
-                                    // intro — we can tidy up immediately
-                                    clear_animation();
-                                }
-                                else {
-                                    // outro — needs to be coordinated
-                                    if (!--running_program.group.r)
-                                        run_all(running_program.group.c);
-                                }
-                            }
-                            running_program = null;
-                        }
-                        else if (now >= running_program.start) {
-                            const p = now - running_program.start;
-                            t = running_program.a + running_program.d * easing(p / running_program.duration);
-                            tick(t, 1 - t);
-                        }
-                    }
-                    return !!(running_program || pending_program);
-                });
-            }
-        }
-        return {
-            run(b) {
-                if (is_function(config)) {
-                    wait().then(() => {
-                        // @ts-ignore
-                        config = config();
-                        go(b);
-                    });
-                }
-                else {
-                    go(b);
-                }
-            },
-            end() {
-                clear_animation();
-                running_program = pending_program = null;
-            }
-        };
     }
     function mount_component(component, target, anchor, customElement) {
         const { fragment, on_mount, on_destroy, after_update } = component.$$;
@@ -616,26 +369,17 @@ var app = (function () {
         }
     }
 
-    function fade(node, { delay = 0, duration = 400, easing = identity } = {}) {
-        const o = +getComputedStyle(node).opacity;
-        return {
-            delay,
-            duration,
-            easing,
-            css: t => `opacity: ${t * o}`
-        };
-    }
-
     /* src/App.svelte generated by Svelte v3.37.0 */
+
     const file = "src/App.svelte";
 
     function get_each_context(ctx, list, i) {
     	const child_ctx = ctx.slice();
-    	child_ctx[44] = list[i];
+    	child_ctx[45] = list[i];
     	return child_ctx;
     }
 
-    // (115:0) {#if showFeedbackDialog}
+    // (118:0) {#if showFeedbackDialog}
     function create_if_block_1(ctx) {
     	let main;
     	let header;
@@ -646,28 +390,28 @@ var app = (function () {
     	let t2;
     	let input0;
     	let t3;
+    	let input1;
+    	let t4;
     	let label0;
     	let span0;
-    	let t4;
     	let t5;
-    	let input1;
     	let t6;
+    	let input2;
     	let t7;
+    	let t8;
     	let label1;
     	let span1;
-    	let t8;
     	let t9;
-    	let textarea;
     	let t10;
+    	let textarea;
     	let t11;
+    	let t12;
     	let footer;
     	let button0;
-    	let t13;
-    	let button1;
     	let t14;
+    	let button1;
+    	let t15;
     	let button1_disabled_value;
-    	let main_transition;
-    	let current;
     	let mounted;
     	let dispose;
     	let each_value = /*options*/ ctx[1];
@@ -678,8 +422,8 @@ var app = (function () {
     		each_blocks[i] = create_each_block(get_each_context(ctx, each_value, i));
     	}
 
-    	let if_block0 = /*_emailHelp*/ ctx[10] && create_if_block_3(ctx);
-    	let if_block1 = /*_bodyHelp*/ ctx[11] && create_if_block_2(ctx);
+    	let if_block0 = /*_emailHelp*/ ctx[9] && create_if_block_3(ctx);
+    	let if_block1 = /*_bodyHelp*/ ctx[10] && create_if_block_2(ctx);
 
     	const block = {
     		c: function create() {
@@ -698,54 +442,61 @@ var app = (function () {
     			t2 = space();
     			input0 = element("input");
     			t3 = space();
+    			input1 = element("input");
+    			t4 = space();
     			label0 = element("label");
     			span0 = element("span");
-    			t4 = text(/*_emailLabel*/ ctx[9]);
-    			t5 = space();
-    			input1 = element("input");
+    			t5 = text(/*_emailLabel*/ ctx[8]);
     			t6 = space();
-    			if (if_block0) if_block0.c();
+    			input2 = element("input");
     			t7 = space();
+    			if (if_block0) if_block0.c();
+    			t8 = space();
     			label1 = element("label");
     			span1 = element("span");
-    			t8 = text(/*_bodyLabel*/ ctx[12]);
-    			t9 = space();
-    			textarea = element("textarea");
+    			t9 = text(/*_bodyLabel*/ ctx[11]);
     			t10 = space();
-    			if (if_block1) if_block1.c();
+    			textarea = element("textarea");
     			t11 = space();
+    			if (if_block1) if_block1.c();
+    			t12 = space();
     			footer = element("footer");
     			button0 = element("button");
     			button0.textContent = "Cancel";
-    			t13 = space();
+    			t14 = space();
     			button1 = element("button");
-    			t14 = text(/*_submitButtonLabel*/ ctx[15]);
-    			add_location(h1, file, 120, 6, 3143);
-    			add_location(header, file, 119, 4, 3128);
+    			t15 = text(/*_submitButtonLabel*/ ctx[14]);
+    			add_location(h1, file, 122, 6, 3230);
+    			add_location(header, file, 121, 4, 3215);
     			attr_dev(div0, "class", "type-picker");
-    			add_location(div0, file, 123, 6, 3204);
+    			add_location(div0, file, 125, 6, 3291);
     			attr_dev(input0, "type", "hidden");
-    			input0.value = /*app*/ ctx[17];
-    			add_location(input0, file, 132, 6, 3503);
-    			add_location(span0, file, 134, 9, 3561);
-    			attr_dev(input1, "type", "text");
-    			attr_dev(input1, "placeholder", /*_emailPlaceholder*/ ctx[8]);
-    			add_location(input1, file, 135, 8, 3596);
-    			add_location(label0, file, 133, 6, 3545);
-    			add_location(span1, file, 139, 9, 3774);
+    			input0.value = /*app*/ ctx[16];
+    			add_location(input0, file, 134, 6, 3590);
+    			attr_dev(input1, "type", "hidden");
+    			input1.value = window.navigator.userAgent;
+    			add_location(input1, file, 135, 6, 3632);
+    			attr_dev(span0, "class", "label");
+    			add_location(span0, file, 137, 9, 3713);
+    			attr_dev(input2, "type", "text");
+    			attr_dev(input2, "placeholder", /*_emailPlaceholder*/ ctx[7]);
+    			add_location(input2, file, 138, 8, 3762);
+    			add_location(label0, file, 136, 6, 3697);
+    			attr_dev(span1, "class", "label");
+    			add_location(span1, file, 142, 9, 3940);
     			attr_dev(textarea, "rows", "10");
-    			attr_dev(textarea, "placeholder", /*_bodyPlaceholder*/ ctx[14]);
-    			add_location(textarea, file, 140, 8, 3808);
-    			add_location(label1, file, 138, 6, 3758);
-    			add_location(button0, file, 148, 4, 4015);
-    			button1.disabled = button1_disabled_value = !/*canSubmitButton*/ ctx[16];
+    			attr_dev(textarea, "placeholder", /*_bodyPlaceholder*/ ctx[13]);
+    			add_location(textarea, file, 143, 8, 3988);
+    			add_location(label1, file, 141, 6, 3924);
+    			add_location(button0, file, 151, 4, 4195);
+    			button1.disabled = button1_disabled_value = !/*canSubmitButton*/ ctx[15];
     			attr_dev(button1, "messagetype", "submit");
-    			add_location(button1, file, 149, 4, 4080);
-    			add_location(footer, file, 147, 3, 4002);
+    			add_location(button1, file, 152, 4, 4260);
+    			add_location(footer, file, 150, 3, 4182);
     			attr_dev(div1, "class", "form");
-    			add_location(div1, file, 122, 4, 3179);
-    			attr_dev(main, "class", "feedback-dialog");
-    			add_location(main, file, 115, 2, 3031);
+    			add_location(div1, file, 124, 4, 3266);
+    			attr_dev(main, "class", "feedback-dialog feedback");
+    			add_location(main, file, 118, 2, 3164);
     		},
     		m: function mount(target, anchor) {
     			insert_dev(target, main, anchor);
@@ -762,46 +513,45 @@ var app = (function () {
     			append_dev(div1, t2);
     			append_dev(div1, input0);
     			append_dev(div1, t3);
+    			append_dev(div1, input1);
+    			append_dev(div1, t4);
     			append_dev(div1, label0);
     			append_dev(label0, span0);
-    			append_dev(span0, t4);
-    			append_dev(label0, t5);
-    			append_dev(label0, input1);
-    			set_input_value(input1, /*email*/ ctx[7]);
+    			append_dev(span0, t5);
     			append_dev(label0, t6);
+    			append_dev(label0, input2);
+    			set_input_value(input2, /*email*/ ctx[6]);
+    			append_dev(label0, t7);
     			if (if_block0) if_block0.m(label0, null);
-    			append_dev(div1, t7);
+    			append_dev(div1, t8);
     			append_dev(div1, label1);
     			append_dev(label1, span1);
-    			append_dev(span1, t8);
-    			append_dev(label1, t9);
-    			append_dev(label1, textarea);
-    			set_input_value(textarea, /*body*/ ctx[3]);
+    			append_dev(span1, t9);
     			append_dev(label1, t10);
+    			append_dev(label1, textarea);
+    			set_input_value(textarea, /*body*/ ctx[2]);
+    			append_dev(label1, t11);
     			if (if_block1) if_block1.m(label1, null);
-    			append_dev(div1, t11);
+    			append_dev(div1, t12);
     			append_dev(div1, footer);
     			append_dev(footer, button0);
-    			append_dev(footer, t13);
+    			append_dev(footer, t14);
     			append_dev(footer, button1);
-    			append_dev(button1, t14);
-    			current = true;
+    			append_dev(button1, t15);
 
     			if (!mounted) {
     				dispose = [
-    					listen_dev(input1, "input", /*input1_input_handler*/ ctx[36]),
-    					listen_dev(textarea, "input", /*textarea_input_handler*/ ctx[37]),
-    					listen_dev(button0, "click", /*click_handler_1*/ ctx[38], false, false, false),
-    					listen_dev(button1, "click", /*click_handler_2*/ ctx[39], false, false, false)
+    					listen_dev(input2, "input", /*input2_input_handler*/ ctx[39]),
+    					listen_dev(textarea, "input", /*textarea_input_handler*/ ctx[40]),
+    					listen_dev(button0, "click", /*click_handler_1*/ ctx[41], false, false, false),
+    					listen_dev(button1, "click", /*click_handler_2*/ ctx[42], false, false, false)
     				];
 
     				mounted = true;
     			}
     		},
-    		p: function update(new_ctx, dirty) {
-    			ctx = new_ctx;
-
-    			if (dirty[0] & /*currentOpt, options, messageType*/ 50) {
+    		p: function update(ctx, dirty) {
+    			if (dirty[0] & /*currentOpt, options, messageType*/ 26) {
     				each_value = /*options*/ ctx[1];
     				validate_each_argument(each_value);
     				let i;
@@ -825,17 +575,17 @@ var app = (function () {
     				each_blocks.length = each_value.length;
     			}
 
-    			if (!current || dirty[0] & /*_emailLabel*/ 512) set_data_dev(t4, /*_emailLabel*/ ctx[9]);
+    			if (dirty[0] & /*_emailLabel*/ 256) set_data_dev(t5, /*_emailLabel*/ ctx[8]);
 
-    			if (!current || dirty[0] & /*_emailPlaceholder*/ 256) {
-    				attr_dev(input1, "placeholder", /*_emailPlaceholder*/ ctx[8]);
+    			if (dirty[0] & /*_emailPlaceholder*/ 128) {
+    				attr_dev(input2, "placeholder", /*_emailPlaceholder*/ ctx[7]);
     			}
 
-    			if (dirty[0] & /*email*/ 128 && input1.value !== /*email*/ ctx[7]) {
-    				set_input_value(input1, /*email*/ ctx[7]);
+    			if (dirty[0] & /*email*/ 64 && input2.value !== /*email*/ ctx[6]) {
+    				set_input_value(input2, /*email*/ ctx[6]);
     			}
 
-    			if (/*_emailHelp*/ ctx[10]) {
+    			if (/*_emailHelp*/ ctx[9]) {
     				if (if_block0) {
     					if_block0.p(ctx, dirty);
     				} else {
@@ -848,17 +598,17 @@ var app = (function () {
     				if_block0 = null;
     			}
 
-    			if (!current || dirty[0] & /*_bodyLabel*/ 4096) set_data_dev(t8, /*_bodyLabel*/ ctx[12]);
+    			if (dirty[0] & /*_bodyLabel*/ 2048) set_data_dev(t9, /*_bodyLabel*/ ctx[11]);
 
-    			if (!current || dirty[0] & /*_bodyPlaceholder*/ 16384) {
-    				attr_dev(textarea, "placeholder", /*_bodyPlaceholder*/ ctx[14]);
+    			if (dirty[0] & /*_bodyPlaceholder*/ 8192) {
+    				attr_dev(textarea, "placeholder", /*_bodyPlaceholder*/ ctx[13]);
     			}
 
-    			if (dirty[0] & /*body*/ 8) {
-    				set_input_value(textarea, /*body*/ ctx[3]);
+    			if (dirty[0] & /*body*/ 4) {
+    				set_input_value(textarea, /*body*/ ctx[2]);
     			}
 
-    			if (/*_bodyHelp*/ ctx[11]) {
+    			if (/*_bodyHelp*/ ctx[10]) {
     				if (if_block1) {
     					if_block1.p(ctx, dirty);
     				} else {
@@ -871,33 +621,17 @@ var app = (function () {
     				if_block1 = null;
     			}
 
-    			if (!current || dirty[0] & /*_submitButtonLabel*/ 32768) set_data_dev(t14, /*_submitButtonLabel*/ ctx[15]);
+    			if (dirty[0] & /*_submitButtonLabel*/ 16384) set_data_dev(t15, /*_submitButtonLabel*/ ctx[14]);
 
-    			if (!current || dirty[0] & /*canSubmitButton*/ 65536 && button1_disabled_value !== (button1_disabled_value = !/*canSubmitButton*/ ctx[16])) {
+    			if (dirty[0] & /*canSubmitButton*/ 32768 && button1_disabled_value !== (button1_disabled_value = !/*canSubmitButton*/ ctx[15])) {
     				prop_dev(button1, "disabled", button1_disabled_value);
     			}
-    		},
-    		i: function intro(local) {
-    			if (current) return;
-
-    			add_render_callback(() => {
-    				if (!main_transition) main_transition = create_bidirectional_transition(main, fade, { duration: /*transitionDuration*/ ctx[2] }, true);
-    				main_transition.run(1);
-    			});
-
-    			current = true;
-    		},
-    		o: function outro(local) {
-    			if (!main_transition) main_transition = create_bidirectional_transition(main, fade, { duration: /*transitionDuration*/ ctx[2] }, false);
-    			main_transition.run(0);
-    			current = false;
     		},
     		d: function destroy(detaching) {
     			if (detaching) detach_dev(main);
     			destroy_each(each_blocks, detaching);
     			if (if_block0) if_block0.d();
     			if (if_block1) if_block1.d();
-    			if (detaching && main_transition) main_transition.end();
     			mounted = false;
     			run_all(dispose);
     		}
@@ -907,31 +641,31 @@ var app = (function () {
     		block,
     		id: create_if_block_1.name,
     		type: "if",
-    		source: "(115:0) {#if showFeedbackDialog}",
+    		source: "(118:0) {#if showFeedbackDialog}",
     		ctx
     	});
 
     	return block;
     }
 
-    // (125:8) {#each options as option}
+    // (127:8) {#each options as option}
     function create_each_block(ctx) {
     	let button;
-    	let t_value = /*option*/ ctx[44].label + "";
+    	let t_value = /*option*/ ctx[45].label + "";
     	let t;
     	let mounted;
     	let dispose;
 
     	function click_handler() {
-    		return /*click_handler*/ ctx[35](/*option*/ ctx[44]);
+    		return /*click_handler*/ ctx[38](/*option*/ ctx[45]);
     	}
 
     	const block = {
     		c: function create() {
     			button = element("button");
     			t = text(t_value);
-    			toggle_class(button, "current", /*currentOpt*/ ctx[5].messageType === /*option*/ ctx[44].messageType);
-    			add_location(button, file, 125, 10, 3274);
+    			toggle_class(button, "current", /*currentOpt*/ ctx[4].messageType === /*option*/ ctx[45].messageType);
+    			add_location(button, file, 127, 10, 3361);
     		},
     		m: function mount(target, anchor) {
     			insert_dev(target, button, anchor);
@@ -944,10 +678,10 @@ var app = (function () {
     		},
     		p: function update(new_ctx, dirty) {
     			ctx = new_ctx;
-    			if (dirty[0] & /*options*/ 2 && t_value !== (t_value = /*option*/ ctx[44].label + "")) set_data_dev(t, t_value);
+    			if (dirty[0] & /*options*/ 2 && t_value !== (t_value = /*option*/ ctx[45].label + "")) set_data_dev(t, t_value);
 
-    			if (dirty[0] & /*currentOpt, options*/ 34) {
-    				toggle_class(button, "current", /*currentOpt*/ ctx[5].messageType === /*option*/ ctx[44].messageType);
+    			if (dirty[0] & /*currentOpt, options*/ 18) {
+    				toggle_class(button, "current", /*currentOpt*/ ctx[4].messageType === /*option*/ ctx[45].messageType);
     			}
     		},
     		d: function destroy(detaching) {
@@ -961,14 +695,14 @@ var app = (function () {
     		block,
     		id: create_each_block.name,
     		type: "each",
-    		source: "(125:8) {#each options as option}",
+    		source: "(127:8) {#each options as option}",
     		ctx
     	});
 
     	return block;
     }
 
-    // (137:8) {#if _emailHelp}
+    // (140:8) {#if _emailHelp}
     function create_if_block_3(ctx) {
     	let span;
     	let t;
@@ -976,16 +710,16 @@ var app = (function () {
     	const block = {
     		c: function create() {
     			span = element("span");
-    			t = text(/*_emailHelp*/ ctx[10]);
+    			t = text(/*_emailHelp*/ ctx[9]);
     			attr_dev(span, "class", "help");
-    			add_location(span, file, 136, 24, 3693);
+    			add_location(span, file, 139, 24, 3859);
     		},
     		m: function mount(target, anchor) {
     			insert_dev(target, span, anchor);
     			append_dev(span, t);
     		},
     		p: function update(ctx, dirty) {
-    			if (dirty[0] & /*_emailHelp*/ 1024) set_data_dev(t, /*_emailHelp*/ ctx[10]);
+    			if (dirty[0] & /*_emailHelp*/ 512) set_data_dev(t, /*_emailHelp*/ ctx[9]);
     		},
     		d: function destroy(detaching) {
     			if (detaching) detach_dev(span);
@@ -996,14 +730,14 @@ var app = (function () {
     		block,
     		id: create_if_block_3.name,
     		type: "if",
-    		source: "(137:8) {#if _emailHelp}",
+    		source: "(140:8) {#if _emailHelp}",
     		ctx
     	});
 
     	return block;
     }
 
-    // (146:8) {#if _bodyHelp}
+    // (149:8) {#if _bodyHelp}
     function create_if_block_2(ctx) {
     	let span;
     	let t;
@@ -1011,16 +745,16 @@ var app = (function () {
     	const block = {
     		c: function create() {
     			span = element("span");
-    			t = text(/*_bodyHelp*/ ctx[11]);
+    			t = text(/*_bodyHelp*/ ctx[10]);
     			attr_dev(span, "class", "help");
-    			add_location(span, file, 145, 23, 3941);
+    			add_location(span, file, 148, 23, 4121);
     		},
     		m: function mount(target, anchor) {
     			insert_dev(target, span, anchor);
     			append_dev(span, t);
     		},
     		p: function update(ctx, dirty) {
-    			if (dirty[0] & /*_bodyHelp*/ 2048) set_data_dev(t, /*_bodyHelp*/ ctx[11]);
+    			if (dirty[0] & /*_bodyHelp*/ 1024) set_data_dev(t, /*_bodyHelp*/ ctx[10]);
     		},
     		d: function destroy(detaching) {
     			if (detaching) detach_dev(span);
@@ -1031,54 +765,34 @@ var app = (function () {
     		block,
     		id: create_if_block_2.name,
     		type: "if",
-    		source: "(146:8) {#if _bodyHelp}",
+    		source: "(149:8) {#if _bodyHelp}",
     		ctx
     	});
 
     	return block;
     }
 
-    // (158:0) {#if showingThanksMessage}
+    // (161:0) {#if showingThanksMessage}
     function create_if_block(ctx) {
     	let div;
     	let t;
-    	let div_transition;
-    	let current;
 
     	const block = {
     		c: function create() {
     			div = element("div");
-    			t = text(/*_thanksMessage*/ ctx[13]);
-    			attr_dev(div, "class", "thanks-message");
-    			add_location(div, file, 158, 2, 4285);
+    			t = text(/*_thanksMessage*/ ctx[12]);
+    			attr_dev(div, "class", "thanks-message feedback");
+    			add_location(div, file, 161, 2, 4465);
     		},
     		m: function mount(target, anchor) {
     			insert_dev(target, div, anchor);
     			append_dev(div, t);
-    			current = true;
     		},
-    		p: function update(new_ctx, dirty) {
-    			ctx = new_ctx;
-    			if (!current || dirty[0] & /*_thanksMessage*/ 8192) set_data_dev(t, /*_thanksMessage*/ ctx[13]);
-    		},
-    		i: function intro(local) {
-    			if (current) return;
-
-    			add_render_callback(() => {
-    				if (!div_transition) div_transition = create_bidirectional_transition(div, fade, { duration: /*transitionDuration*/ ctx[2] }, true);
-    				div_transition.run(1);
-    			});
-
-    			current = true;
-    		},
-    		o: function outro(local) {
-    			if (!div_transition) div_transition = create_bidirectional_transition(div, fade, { duration: /*transitionDuration*/ ctx[2] }, false);
-    			div_transition.run(0);
-    			current = false;
+    		p: function update(ctx, dirty) {
+    			if (dirty[0] & /*_thanksMessage*/ 4096) set_data_dev(t, /*_thanksMessage*/ ctx[12]);
     		},
     		d: function destroy(detaching) {
     			if (detaching) detach_dev(div);
-    			if (detaching && div_transition) div_transition.end();
     		}
     	};
 
@@ -1086,7 +800,7 @@ var app = (function () {
     		block,
     		id: create_if_block.name,
     		type: "if",
-    		source: "(158:0) {#if showingThanksMessage}",
+    		source: "(161:0) {#if showingThanksMessage}",
     		ctx
     	});
 
@@ -1098,11 +812,10 @@ var app = (function () {
     	let t1;
     	let t2;
     	let if_block1_anchor;
-    	let current;
     	let mounted;
     	let dispose;
     	let if_block0 = /*showFeedbackDialog*/ ctx[0] && create_if_block_1(ctx);
-    	let if_block1 = /*showingThanksMessage*/ ctx[6] && create_if_block(ctx);
+    	let if_block1 = /*showingThanksMessage*/ ctx[5] && create_if_block(ctx);
 
     	const block = {
     		c: function create() {
@@ -1114,7 +827,7 @@ var app = (function () {
     			if (if_block1) if_block1.c();
     			if_block1_anchor = empty();
     			this.c = noop;
-    			add_location(button, file, 112, 0, 2948);
+    			add_location(button, file, 115, 0, 3081);
     		},
     		l: function claim(nodes) {
     			throw new Error("options.hydrate only works if the component was compiled with the `hydratable: true` option");
@@ -1126,10 +839,9 @@ var app = (function () {
     			insert_dev(target, t2, anchor);
     			if (if_block1) if_block1.m(target, anchor);
     			insert_dev(target, if_block1_anchor, anchor);
-    			current = true;
 
     			if (!mounted) {
-    				dispose = listen_dev(button, "click", /*handleClickHelpButton*/ ctx[18], false, false, false);
+    				dispose = listen_dev(button, "click", /*handleClickHelpButton*/ ctx[17], false, false, false);
     				mounted = true;
     			}
     		},
@@ -1137,60 +849,31 @@ var app = (function () {
     			if (/*showFeedbackDialog*/ ctx[0]) {
     				if (if_block0) {
     					if_block0.p(ctx, dirty);
-
-    					if (dirty[0] & /*showFeedbackDialog*/ 1) {
-    						transition_in(if_block0, 1);
-    					}
     				} else {
     					if_block0 = create_if_block_1(ctx);
     					if_block0.c();
-    					transition_in(if_block0, 1);
     					if_block0.m(t2.parentNode, t2);
     				}
     			} else if (if_block0) {
-    				group_outros();
-
-    				transition_out(if_block0, 1, 1, () => {
-    					if_block0 = null;
-    				});
-
-    				check_outros();
+    				if_block0.d(1);
+    				if_block0 = null;
     			}
 
-    			if (/*showingThanksMessage*/ ctx[6]) {
+    			if (/*showingThanksMessage*/ ctx[5]) {
     				if (if_block1) {
     					if_block1.p(ctx, dirty);
-
-    					if (dirty[0] & /*showingThanksMessage*/ 64) {
-    						transition_in(if_block1, 1);
-    					}
     				} else {
     					if_block1 = create_if_block(ctx);
     					if_block1.c();
-    					transition_in(if_block1, 1);
     					if_block1.m(if_block1_anchor.parentNode, if_block1_anchor);
     				}
     			} else if (if_block1) {
-    				group_outros();
-
-    				transition_out(if_block1, 1, 1, () => {
-    					if_block1 = null;
-    				});
-
-    				check_outros();
+    				if_block1.d(1);
+    				if_block1 = null;
     			}
     		},
-    		i: function intro(local) {
-    			if (current) return;
-    			transition_in(if_block0);
-    			transition_in(if_block1);
-    			current = true;
-    		},
-    		o: function outro(local) {
-    			transition_out(if_block0);
-    			transition_out(if_block1);
-    			current = false;
-    		},
+    		i: noop,
+    		o: noop,
     		d: function destroy(detaching) {
     			if (detaching) detach_dev(button);
     			if (detaching) detach_dev(t1);
@@ -1227,19 +910,20 @@ var app = (function () {
     	let canSubmitButton;
     	let { $$slots: slots = {}, $$scope } = $$props;
     	validate_slots("feedback-form", slots, []);
-    	let { showFeedbackDialog = false } = $$props;
+    	let { showFeedbackDialog = true } = $$props;
+    	let { useHelpButton = false } = $$props;
     	let { callback = () => null } = $$props;
     	let { defaultApp = "drive-ui" } = $$props;
     	let { defaultEmail = "" } = $$props;
     	let { defaultBody = "" } = $$props;
-    	let { defaultMessageType = "asdf" } = $$props;
+    	let { defaultMessageType = "" } = $$props;
     	let { emailLabel = "Email Address" } = $$props;
-    	let { emailPlaceholder = "phil.lee@greymatter.io" } = $$props;
-    	let { emailHelp = "probably includes an '@' symbol" } = $$props;
+    	let { emailPlaceholder = "name@provider" } = $$props;
+    	let { emailHelp = "We'll only contact you about this feedback" } = $$props;
     	let { bodyLabel = "Message" } = $$props;
-    	let { bodyHelp = "Please be helpful and considerate" } = $$props;
-    	let { bodyPlaceholder = "Please add your cool message" } = $$props;
-    	let { submitButtonLabel = "Submit Feedback" } = $$props;
+    	let { bodyHelp = "" } = $$props;
+    	let { bodyPlaceholder = "" } = $$props;
+    	let { submitButtonLabel = "" } = $$props;
     	let { thanksMessage = "Thanks for submitting your feedback!" } = $$props;
 
     	let { options = [
@@ -1247,11 +931,14 @@ var app = (function () {
     		{
     			messageType: "bug-report",
     			label: "Report Issue",
-    			bodyHelp: "Include any steps to reproduce"
+    			submitButtonLabel: "Send Report",
+    			bodyHelp: "Please include steps to reproduce the problem, your operating system, what happened, and what you expected to happen."
     		},
     		{
     			messageType: "feature-request",
-    			label: "Request Feature"
+    			label: "Request Feature",
+    			submitButtonLabel: "Send Request",
+    			bodyHelp: "What is the feature? Why is this feature needed?"
     		}
     	] } = $$props;
 
@@ -1272,24 +959,24 @@ var app = (function () {
     	}
 
     	function resetForm() {
-    		$$invalidate(3, body = "");
+    		$$invalidate(2, body = "");
     	}
 
-    	function closeDialog() {
+    	function close() {
     		$$invalidate(0, showFeedbackDialog = false);
     	}
 
     	function handlePressCancel() {
     		resetForm();
-    		closeDialog();
+    		close();
     	}
 
     	function showThanksMessage() {
-    		$$invalidate(6, showingThanksMessage = true);
+    		$$invalidate(5, showingThanksMessage = true);
 
     		setTimeout(
     			() => {
-    				$$invalidate(6, showingThanksMessage = false);
+    				$$invalidate(5, showingThanksMessage = false);
     			},
     			thanksMessageShowDuration
     		);
@@ -1299,7 +986,7 @@ var app = (function () {
     		const newFeedback = { type: messageType, body, email, app };
     		callback(newFeedback);
     		resetForm();
-    		closeDialog();
+    		close();
     		showThanksMessage();
     	}
 
@@ -1309,6 +996,7 @@ var app = (function () {
 
     	const writable_props = [
     		"showFeedbackDialog",
+    		"useHelpButton",
     		"callback",
     		"defaultApp",
     		"defaultEmail",
@@ -1331,16 +1019,16 @@ var app = (function () {
     		if (!~writable_props.indexOf(key) && key.slice(0, 2) !== "$$") console.warn(`<feedback-form> was created with unknown prop '${key}'`);
     	});
 
-    	const click_handler = option => $$invalidate(4, messageType = option.messageType);
+    	const click_handler = option => $$invalidate(3, messageType = option.messageType);
 
-    	function input1_input_handler() {
+    	function input2_input_handler() {
     		email = this.value;
-    		$$invalidate(7, email);
+    		$$invalidate(6, email);
     	}
 
     	function textarea_input_handler() {
     		body = this.value;
-    		$$invalidate(3, body);
+    		$$invalidate(2, body);
     	}
 
     	const click_handler_1 = () => handlePressCancel();
@@ -1348,6 +1036,7 @@ var app = (function () {
 
     	$$self.$$set = $$props => {
     		if ("showFeedbackDialog" in $$props) $$invalidate(0, showFeedbackDialog = $$props.showFeedbackDialog);
+    		if ("useHelpButton" in $$props) $$invalidate(20, useHelpButton = $$props.useHelpButton);
     		if ("callback" in $$props) $$invalidate(21, callback = $$props.callback);
     		if ("defaultApp" in $$props) $$invalidate(22, defaultApp = $$props.defaultApp);
     		if ("defaultEmail" in $$props) $$invalidate(23, defaultEmail = $$props.defaultEmail);
@@ -1363,12 +1052,12 @@ var app = (function () {
     		if ("thanksMessage" in $$props) $$invalidate(33, thanksMessage = $$props.thanksMessage);
     		if ("options" in $$props) $$invalidate(1, options = $$props.options);
     		if ("thanksMessageShowDuration" in $$props) $$invalidate(34, thanksMessageShowDuration = $$props.thanksMessageShowDuration);
-    		if ("transitionDuration" in $$props) $$invalidate(2, transitionDuration = $$props.transitionDuration);
+    		if ("transitionDuration" in $$props) $$invalidate(35, transitionDuration = $$props.transitionDuration);
     	};
 
     	$$self.$capture_state = () => ({
-    		fade,
     		showFeedbackDialog,
+    		useHelpButton,
     		callback,
     		defaultApp,
     		defaultEmail,
@@ -1392,7 +1081,7 @@ var app = (function () {
     		messageType,
     		handleClickHelpButton,
     		resetForm,
-    		closeDialog,
+    		close,
     		handlePressCancel,
     		showThanksMessage,
     		submitFeedback,
@@ -1411,6 +1100,7 @@ var app = (function () {
 
     	$$self.$inject_state = $$props => {
     		if ("showFeedbackDialog" in $$props) $$invalidate(0, showFeedbackDialog = $$props.showFeedbackDialog);
+    		if ("useHelpButton" in $$props) $$invalidate(20, useHelpButton = $$props.useHelpButton);
     		if ("callback" in $$props) $$invalidate(21, callback = $$props.callback);
     		if ("defaultApp" in $$props) $$invalidate(22, defaultApp = $$props.defaultApp);
     		if ("defaultEmail" in $$props) $$invalidate(23, defaultEmail = $$props.defaultEmail);
@@ -1426,22 +1116,22 @@ var app = (function () {
     		if ("thanksMessage" in $$props) $$invalidate(33, thanksMessage = $$props.thanksMessage);
     		if ("options" in $$props) $$invalidate(1, options = $$props.options);
     		if ("thanksMessageShowDuration" in $$props) $$invalidate(34, thanksMessageShowDuration = $$props.thanksMessageShowDuration);
-    		if ("transitionDuration" in $$props) $$invalidate(2, transitionDuration = $$props.transitionDuration);
-    		if ("showingThanksMessage" in $$props) $$invalidate(6, showingThanksMessage = $$props.showingThanksMessage);
-    		if ("app" in $$props) $$invalidate(17, app = $$props.app);
-    		if ("email" in $$props) $$invalidate(7, email = $$props.email);
-    		if ("body" in $$props) $$invalidate(3, body = $$props.body);
-    		if ("messageType" in $$props) $$invalidate(4, messageType = $$props.messageType);
-    		if ("currentOpt" in $$props) $$invalidate(5, currentOpt = $$props.currentOpt);
-    		if ("_emailPlaceholder" in $$props) $$invalidate(8, _emailPlaceholder = $$props._emailPlaceholder);
-    		if ("_emailLabel" in $$props) $$invalidate(9, _emailLabel = $$props._emailLabel);
-    		if ("_emailHelp" in $$props) $$invalidate(10, _emailHelp = $$props._emailHelp);
-    		if ("_bodyHelp" in $$props) $$invalidate(11, _bodyHelp = $$props._bodyHelp);
-    		if ("_bodyLabel" in $$props) $$invalidate(12, _bodyLabel = $$props._bodyLabel);
-    		if ("_thanksMessage" in $$props) $$invalidate(13, _thanksMessage = $$props._thanksMessage);
-    		if ("_bodyPlaceholder" in $$props) $$invalidate(14, _bodyPlaceholder = $$props._bodyPlaceholder);
-    		if ("_submitButtonLabel" in $$props) $$invalidate(15, _submitButtonLabel = $$props._submitButtonLabel);
-    		if ("canSubmitButton" in $$props) $$invalidate(16, canSubmitButton = $$props.canSubmitButton);
+    		if ("transitionDuration" in $$props) $$invalidate(35, transitionDuration = $$props.transitionDuration);
+    		if ("showingThanksMessage" in $$props) $$invalidate(5, showingThanksMessage = $$props.showingThanksMessage);
+    		if ("app" in $$props) $$invalidate(16, app = $$props.app);
+    		if ("email" in $$props) $$invalidate(6, email = $$props.email);
+    		if ("body" in $$props) $$invalidate(2, body = $$props.body);
+    		if ("messageType" in $$props) $$invalidate(3, messageType = $$props.messageType);
+    		if ("currentOpt" in $$props) $$invalidate(4, currentOpt = $$props.currentOpt);
+    		if ("_emailPlaceholder" in $$props) $$invalidate(7, _emailPlaceholder = $$props._emailPlaceholder);
+    		if ("_emailLabel" in $$props) $$invalidate(8, _emailLabel = $$props._emailLabel);
+    		if ("_emailHelp" in $$props) $$invalidate(9, _emailHelp = $$props._emailHelp);
+    		if ("_bodyHelp" in $$props) $$invalidate(10, _bodyHelp = $$props._bodyHelp);
+    		if ("_bodyLabel" in $$props) $$invalidate(11, _bodyLabel = $$props._bodyLabel);
+    		if ("_thanksMessage" in $$props) $$invalidate(12, _thanksMessage = $$props._thanksMessage);
+    		if ("_bodyPlaceholder" in $$props) $$invalidate(13, _bodyPlaceholder = $$props._bodyPlaceholder);
+    		if ("_submitButtonLabel" in $$props) $$invalidate(14, _submitButtonLabel = $$props._submitButtonLabel);
+    		if ("canSubmitButton" in $$props) $$invalidate(15, canSubmitButton = $$props.canSubmitButton);
     	};
 
     	if ($$props && "$$inject" in $$props) {
@@ -1449,51 +1139,50 @@ var app = (function () {
     	}
 
     	$$self.$$.update = () => {
-    		if ($$self.$$.dirty[0] & /*options, messageType*/ 18) {
-    			$$invalidate(5, currentOpt = options.find(opt => opt.messageType === messageType) || options[0]);
+    		if ($$self.$$.dirty[0] & /*options, messageType*/ 10) {
+    			$$invalidate(4, currentOpt = options.find(opt => opt.messageType === messageType) || options[0]);
     		}
 
-    		if ($$self.$$.dirty[0] & /*currentOpt, emailPlaceholder*/ 134217760) {
-    			$$invalidate(8, _emailPlaceholder = currentOpt.emailPlaceholder || emailPlaceholder || undefined);
+    		if ($$self.$$.dirty[0] & /*currentOpt, emailPlaceholder*/ 134217744) {
+    			$$invalidate(7, _emailPlaceholder = currentOpt.emailPlaceholder || emailPlaceholder || undefined);
     		}
 
-    		if ($$self.$$.dirty[0] & /*currentOpt, emailLabel*/ 67108896) {
-    			$$invalidate(9, _emailLabel = currentOpt.emailLabel || emailLabel || "Email Address");
+    		if ($$self.$$.dirty[0] & /*currentOpt, emailLabel*/ 67108880) {
+    			$$invalidate(8, _emailLabel = currentOpt.emailLabel || emailLabel || "Email Address");
     		}
 
-    		if ($$self.$$.dirty[0] & /*currentOpt, emailHelp*/ 268435488) {
-    			$$invalidate(10, _emailHelp = currentOpt.emailHelp || emailHelp || undefined);
+    		if ($$self.$$.dirty[0] & /*currentOpt, emailHelp*/ 268435472) {
+    			$$invalidate(9, _emailHelp = currentOpt.emailHelp || emailHelp || undefined);
     		}
 
-    		if ($$self.$$.dirty[0] & /*currentOpt, bodyHelp*/ 1073741856) {
-    			$$invalidate(11, _bodyHelp = currentOpt.bodyHelp || bodyHelp || undefined);
+    		if ($$self.$$.dirty[0] & /*currentOpt, bodyHelp*/ 1073741840) {
+    			$$invalidate(10, _bodyHelp = currentOpt.bodyHelp || bodyHelp || undefined);
     		}
 
-    		if ($$self.$$.dirty[0] & /*currentOpt, bodyLabel*/ 536870944) {
-    			$$invalidate(12, _bodyLabel = currentOpt.bodyLabel || bodyLabel || "Message");
+    		if ($$self.$$.dirty[0] & /*currentOpt, bodyLabel*/ 536870928) {
+    			$$invalidate(11, _bodyLabel = currentOpt.bodyLabel || bodyLabel || "Message");
     		}
 
-    		if ($$self.$$.dirty[0] & /*currentOpt*/ 32 | $$self.$$.dirty[1] & /*thanksMessage*/ 4) {
-    			$$invalidate(13, _thanksMessage = currentOpt.thanksMessage || thanksMessage || "Thanks for your feedback!");
+    		if ($$self.$$.dirty[0] & /*currentOpt*/ 16 | $$self.$$.dirty[1] & /*thanksMessage*/ 4) {
+    			$$invalidate(12, _thanksMessage = currentOpt.thanksMessage || thanksMessage || "Thanks for your feedback!");
     		}
 
-    		if ($$self.$$.dirty[0] & /*currentOpt*/ 32 | $$self.$$.dirty[1] & /*bodyPlaceholder*/ 1) {
-    			$$invalidate(14, _bodyPlaceholder = currentOpt.bodyPlaceholder || bodyPlaceholder || undefined);
+    		if ($$self.$$.dirty[0] & /*currentOpt*/ 16 | $$self.$$.dirty[1] & /*bodyPlaceholder*/ 1) {
+    			$$invalidate(13, _bodyPlaceholder = currentOpt.bodyPlaceholder || bodyPlaceholder || undefined);
     		}
 
-    		if ($$self.$$.dirty[0] & /*currentOpt*/ 32 | $$self.$$.dirty[1] & /*submitButtonLabel*/ 2) {
-    			$$invalidate(15, _submitButtonLabel = currentOpt.submitButtonLabel || submitButtonLabel || "Submit Feedback");
+    		if ($$self.$$.dirty[0] & /*currentOpt*/ 16 | $$self.$$.dirty[1] & /*submitButtonLabel*/ 2) {
+    			$$invalidate(14, _submitButtonLabel = currentOpt.submitButtonLabel || submitButtonLabel || "Send Feedback");
     		}
 
-    		if ($$self.$$.dirty[0] & /*body*/ 8) {
-    			$$invalidate(16, canSubmitButton = body !== "");
+    		if ($$self.$$.dirty[0] & /*body*/ 4) {
+    			$$invalidate(15, canSubmitButton = body !== "");
     		}
     	};
 
     	return [
     		showFeedbackDialog,
     		options,
-    		transitionDuration,
     		body,
     		messageType,
     		currentOpt,
@@ -1512,6 +1201,7 @@ var app = (function () {
     		handleClickHelpButton,
     		handlePressCancel,
     		handlePressSubmit,
+    		useHelpButton,
     		callback,
     		defaultApp,
     		defaultEmail,
@@ -1526,8 +1216,11 @@ var app = (function () {
     		submitButtonLabel,
     		thanksMessage,
     		thanksMessageShowDuration,
+    		transitionDuration,
+    		resetForm,
+    		close,
     		click_handler,
-    		input1_input_handler,
+    		input2_input_handler,
     		textarea_input_handler,
     		click_handler_1,
     		click_handler_2
@@ -1537,7 +1230,7 @@ var app = (function () {
     class App extends SvelteElement {
     	constructor(options) {
     		super();
-    		this.shadowRoot.innerHTML = `<style>@keyframes appear{from{opacity:0}to{opacity:1}}@keyframes disappear{from{opacity:0}to{opacity:1}}*{box-sizing:border-box}button.current{border:1px solid blue}.feedback-dialog,.thanks-message{position:fixed;top:50%;left:50%;transform:translate(-50%, -50%)}.thanks-message{--background:#fff}main{--_color-background:var(--color-background, #fff);--_color-border:var(--color-border, #eee);--_color-shadow:var(--color-shadow, #000);--_color-body-text:var(--color-body-text, #000);--_color-body-text---muted:var(--color-body-text---muted, rgba(0, 0, 0, 0.7));--_control-margin:var(--control-margin, 0.25rem);--_control-padding:var(--control-padding, 0.25rem 0.5rem);--_control-border-radius:var(--control-border-radius, 0.25rem);--_control-background:var(--control-background, #ddd);--_control-text:var(--control-background, #000);--_control-border:var(--control-border, 0);--_control-background---current:var(--control-background, #blue);--_control-color---current:var(--control-background, #fff);--_control-border---current:var(--control-border, 0);--_font-size:var(--font-size, 1rem);--_form-outer-spacing:var(--form-outer-spacing, 1rem);--_form-inner-spacing:var(--form-inner-spacing, 1rem);--_form-max-width:var(--form-max-width, 20em);--_form-border-radius:var(--form-border-radius, 0.5rem);--_form-background:var(--form-background, #fff);--_form-border:var(--form-border, 1px solid);--_form-font-family:var(--form-font-family, inherit);max-height:calc(100vh - (var(--_form-outer-spacing) / 2));max-width:calc(100vw - (var(--_form-outer-spacing) / 2));display:flex;flex-direction:column;align-items:stretch;font-family:var(--_form-font-family);border-radius:var(--_form-border-radius);border:var(--_form-border);max-width:var(--_form-max-width);padding:var(--_form-inner-spacing);animation:appear 1s both}header{}footer{display:flex;justify-content:flex-end}footer button{margin-inline-start:0.5rem}h1{margin:0;padding:0 0 0.5rem;font-size:var(--_font-size)}.form{display:flex;flex-direction:column;gap:1rem}label{display:flex;flex-direction:column;align-items:stretch}label input{margin-top:0.25rem;margin-bottom:0.25rem}label span{font-size:var(--_font-size);margin-bottom:0.25rem}label .help{font-size:85%;color:var(--_color-body-text---muted)}input,textarea{border-radius:var(--_control-border-radius);border:1px solid}.type-picker{display:flex;flex-direction:row;flex-wrap:wrap}.type-picker button{appearance:none;background:var(--_control-background);padding:var(--_control-padding);border-radius:var(--_control-border-radius);border:var(--_control-border)}.type-picker .current{background:blue;color:white}.type-picker button:hover{filter:brightness(110%)}</style>`;
+    		this.shadowRoot.innerHTML = `<style>.feedback{--_color-background:var(--color-background, #fff);--_color-border:var(--color-border, rgba(0,0,0,0.08));--_color-shadow:var(--color-shadow, rgba(0,0,0,0.1));--_color-highlight:var(--color-highlight, blue);--_color-body-text:var(--color-body-text, #000);--_color-body-text---muted:var(--color-body-text---muted, rgba(0, 0, 0, 0.7));--_shadow:var(--shadow, 0 0.125rem 0.25rem var(--_color-shadow));--_font-size:var(--font-size, 1em);--_control-margin:var(--control-margin, 0.25rem);--_control-padding:var(--control-padding, 0.25rem 0.5rem);--_control-border-radius:var(--control-border-radius, 0.25rem);--_control-background:var(--control-background, #ddd);--_control-text:var(--control-background, #000);--_control-border:var(--control-border, 0);--_control-background---current:var(--control-background, var(--_color-highlight));--_control-color---current:var(--control-background, #fff);--_control-border---current:var(--control-border, 0);--_control-background---current:var(--control-background, var(--_color-highlight));--_control-color---current:var(--control-background, #fff);--_control-border---current:var(--control-border, 0);--_field-background:var(--_field-background, var(--_color-background));--_field-border:var(--field-border, 1px solid var(--_color-border));--_field-color:var(--field-color, var(--_color-body-text));--_field-padding:var(--field-padding, var(--_control-padding));--_field-background---current:var(--_field-background---current, var(--_color-background));--_field-border---current:var(--field-border---current, 1px solid var(--_color-highlight));--_field-color---current:var(--field-color---current, var(--_color-body-text));--_form-shadow:var(--form-shadow, var(--_shadow));--_form-outer-spacing:var(--form-outer-spacing, 1rem);--_form-inner-spacing:var(--form-inner-spacing, 1rem);--_form-max-width:var(--form-max-width, 21em);--_form-border-radius:var(--form-border-radius, 0.5rem);--_form-background:var(--form-background, #fff);--_form-border:var(--form-border, 1px solid var(--_color-border));--_form-shadow:var(--form-shadow, 0 0.5rem 0.5rem var(--_color-shadow));--_form-font-family:var(--form-font-family, inherit);--_form-z-index:var(--form-z-index, 9999999);--_thanks-shadow:var(--thanks-shadow, var(--_shadow));--_thanks-font-family:var(--thanks-font-family, inherit);--_thanks-background:var(--thanks-background, var(--_color-background));--_thanks-color:var(--thanks-color, var(--_color-body-text));--_thanks-padding:var(--thanks-padding, 1rem);--_thanks-border-radius:var(--thanks-border-radius, 0.5rem)}@keyframes appear{from{opacity:0}to{opacity:1}}@keyframes disappear{from{opacity:0}to{opacity:1}}*{box-sizing:border-box}button.current{border:1px solid blue}.feedback-dialog,.thanks-message{position:fixed;top:50%;left:50%;transform:translate(-50%, -50%)}.feedback-dialog{z-index:var(--_form-z-index);box-shadow:var(--_form-shadow);font-family:var(--_form-font-family);border-radius:var(--_form-border-radius);border:var(--_form-border);width:var(--_form-max-width);padding:var(--_form-inner-spacing);animation:appear 1s both;display:flex;flex-direction:column;align-items:stretch;max-height:calc(100vh - (var(--_form-outer-spacing) / 2));max-width:calc(100vw - (var(--_form-outer-spacing) / 2))}.thanks-message{--background:#fff;background:var(--_thanks-background);box-shadow:var(--_thanks-shadow);font-family:var(--_thanks-font-family);padding:var(--_thanks-padding);border-radius:var(--_thanks-border-radius);width:max-content;max-width:90%}header{}footer{display:flex;justify-content:flex-end}footer button{margin-inline-start:0.5rem}h1{margin:0;padding:0 0 0.5rem;font-size:var(--_font-size)}.form{display:flex;flex-direction:column}label{display:flex;flex-direction:column;align-items:stretch;margin-top:0.5rem;margin-bottom:0.5rem}input,textarea{margin-top:0.125rem;margin-bottom:0.25rem;padding:var(--_field-padding);font:inherit;background:var(--_field-background);color:var(--_field-color);border:var(--_field-border)}label input:focus,label textarea:focus{background:var(--_field-background---current);color:var(--_field-color---current);border:var(--_field-border---current)}label span{font-size:var(--_font-size);margin-bottom:0.25rem}label .help{font-size:85%;color:var(--_color-body-text---muted)}input,textarea{border-radius:var(--_control-border-radius)}.type-picker{display:flex;flex-direction:row;flex-wrap:wrap;margin:-0.25rem;justify-content:space-between;padding-bottom:0.5rem;border-bottom:1px solid var(--_color-border);margin-bottom:0.5rem}.type-picker button{margin:0.25rem}button{appearance:none;background:var(--_control-background);padding:var(--_control-padding);border-radius:var(--_control-border-radius);border:var(--_control-border)}button.current{background:var(--_control-background---current);border:var(--_control-border---current);color:var(--_control-color---current)}input,textarea{border:1px solid rgba(0,0,0,0.08);background:rgba(0,0,0,0.02);background-clip:padding-box;transition:border 0.1s ease}label .label{font-size:70%;font-weight:600;letter-spacing:0.06em;text-transform:uppercase;color:var(--_color-body-text---muted)}input:focus,textarea:focus{outline:none}button:hover{filter:brightness(110%)}.feedback-dialog{--color-highlight:#00b42b;--color-border:rgba(0,0,0,0.08)}</style>`;
 
     		init(
     			this,
@@ -1551,6 +1244,7 @@ var app = (function () {
     			safe_not_equal,
     			{
     				showFeedbackDialog: 0,
+    				useHelpButton: 20,
     				callback: 21,
     				defaultApp: 22,
     				defaultEmail: 23,
@@ -1566,7 +1260,9 @@ var app = (function () {
     				thanksMessage: 33,
     				options: 1,
     				thanksMessageShowDuration: 34,
-    				transitionDuration: 2
+    				transitionDuration: 35,
+    				resetForm: 36,
+    				close: 37
     			},
     			[-1, -1]
     		);
@@ -1586,6 +1282,7 @@ var app = (function () {
     	static get observedAttributes() {
     		return [
     			"showFeedbackDialog",
+    			"useHelpButton",
     			"callback",
     			"defaultApp",
     			"defaultEmail",
@@ -1601,7 +1298,9 @@ var app = (function () {
     			"thanksMessage",
     			"options",
     			"thanksMessageShowDuration",
-    			"transitionDuration"
+    			"transitionDuration",
+    			"resetForm",
+    			"close"
     		];
     	}
 
@@ -1611,6 +1310,15 @@ var app = (function () {
 
     	set showFeedbackDialog(showFeedbackDialog) {
     		this.$set({ showFeedbackDialog });
+    		flush();
+    	}
+
+    	get useHelpButton() {
+    		return this.$$.ctx[20];
+    	}
+
+    	set useHelpButton(useHelpButton) {
+    		this.$set({ useHelpButton });
     		flush();
     	}
 
@@ -1750,12 +1458,28 @@ var app = (function () {
     	}
 
     	get transitionDuration() {
-    		return this.$$.ctx[2];
+    		return this.$$.ctx[35];
     	}
 
     	set transitionDuration(transitionDuration) {
     		this.$set({ transitionDuration });
     		flush();
+    	}
+
+    	get resetForm() {
+    		return this.$$.ctx[36];
+    	}
+
+    	set resetForm(value) {
+    		throw new Error("<feedback-form>: Cannot set read-only property 'resetForm'");
+    	}
+
+    	get close() {
+    		return this.$$.ctx[37];
+    	}
+
+    	set close(value) {
+    		throw new Error("<feedback-form>: Cannot set read-only property 'close'");
     	}
     }
 

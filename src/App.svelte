@@ -2,6 +2,7 @@
 
 <script>
   export let showFeedbackDialog = true;
+  export let useHelpButton = false;
   export let callback = () => null;
 
   // Default contents
@@ -74,17 +75,17 @@
     showFeedbackDialog = !showFeedbackDialog;
   }
 
-  function resetForm() {
+  export function resetForm() {
     body = "";
   }
 
-  function closeDialog() {
+  export function close() {
     showFeedbackDialog = false;
   }
 
   function handlePressCancel() {
     resetForm()
-    closeDialog()
+    close()
   }
 
   function showThanksMessage() {
@@ -103,7 +104,7 @@
     };
     callback(newFeedback);
     resetForm();
-    closeDialog();
+    close();
     showThanksMessage();
   }
 
@@ -176,7 +177,7 @@
     --_color-body-text---muted: var(--color-body-text---muted, rgba(0, 0, 0, 0.7));
 
 		--_shadow: var(--shadow, 0 0.125rem 0.25rem var(--_color-shadow));
-		--_font-size: var(--font-size, 1rem);
+		--_font-size: var(--font-size, 1em);
 
     --_control-margin: var(--control-margin, 0.25rem);
     --_control-padding: var(--control-padding, 0.25rem 0.5rem);
@@ -212,6 +213,7 @@
     --_form-border: var(--form-border, 1px solid var(--_color-border));
     --_form-shadow: var(--form-shadow, 0 0.5rem 0.5rem var(--_color-shadow));
     --_form-font-family: var(--form-font-family, inherit);
+    --_form-z-index: var(--form-z-index, 9999999);
 
 		--_thanks-shadow: var(--thanks-shadow, var(--_shadow));
 		--_thanks-font-family: var(--thanks-font-family, inherit);
@@ -257,6 +259,7 @@
 	}
 
 	.feedback-dialog {
+    z-index: var(--_form-z-index);
 		box-shadow: var(--_form-shadow);
     font-family: var(--_form-font-family);
     border-radius: var(--_form-border-radius);
